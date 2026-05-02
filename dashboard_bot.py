@@ -1,0 +1,226 @@
+from flask import Flask, render_template_string, jsonify
+import requests
+import time
+from threading import Thread
+
+app = Flask(__name__)
+
+prijzen = []
+waardes = []
+
+start_saldo = 1000
+saldo_usdt = 1000
+btc_bezit = 0
+positie_open = False
+koopprijs = 0
+hoogste_prijs = 0
+fee = 0.001
+
+status = "Starten..."
+laatste_prijs = 0
+laatste_rsi = 0
+laatste_winst = 0
+rsi_oversold_geweest = False
+
+def bereken_rsi(prijzen, periode=14):
+    if len(prijzen) < periode + 1:
+        return None
+
+    winsten = []
+    verliezen = []
+    laatste = prijzen[-(periode + 1):]
+
+    for i in range(1, len(laatste)):
+        verschil = laatste[i] - laatste[i - 1]
+
+        if verschil > 0:
+            winsten.append(verschil)
+            verliezen.append(0)
+        else:
+            winsten.append(0)
+            verliezen.append(abs(verschil))
+
+    gem_winst = sum(winsten) / periode
+    gem_verlies = sum(verliezen) / periode
+
+    if gem_verlies == 0:
+        return 100
+
+    rs = gem_winst / gem_verlies
+    return 100 - (100 / (1 + rs))
+
+def bot_loop():
+    global saldo_usdt, btc_bezit, positie_open, koopprijs, hoogste_prijs
+    global status, laatste_prijs, laatste_rsi, laatste_winst, rsi_oversold_geweest
+
+    while True:
+        try:
+            data = requests.get(
+                "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+                timeout=10
+            ).json()
+
+            prijs = float(data["price"])
+            prijzen.append(prijs)
+            laatste_prijs = prijs
+
+            rsi = bereken_rsi(prijzen)
+            laatste_rsi = rsi if rsi is not None else 0
+
+            if len(prijzen) >= 100 and rsi is not None:
+                ma20 = sum(prijzen[-20:]) / 20
+                ma50 = sum(prijzen[-50:]) / 50
+                ma100 = sum(prijzen[-100:]) / 100
+
+                trend_ok = ma20 > ma50 and prijs > ma100
+
+                if rsi < 30:
+                    rsi_oversold_geweest = True
+
+                if not positie_open:
+                    koop_signaal = (
+                        rsi_oversold_geweest
+                        and rsi > 30
+                        and trend_ok
+                        and rsi < 70
+                    )
+
+                    if koop_signaal:
+                        btc_bezit = (saldo_usdt * (1 - fee)) / prijs
+                        koopprijs = prijs
+                        hoogste_prijs = prijs
+                        saldo_usdt = 0
+                        positie_open = True
+                        rsi_oversold_geweest = False
+                        status = "PAPER KOOP - TREND ENTRY"
+                    else:
+                        status = "Geen koop"
+
+                else:
+                    if prijs > hoogste_prijs:
+                        hoogste_prijs = prijs
+
+                    verandering = (prijs - koopprijs) / koopprijs * 100
+                    trailing_daling = (hoogste_prijs - prijs) / hoogste_prijs * 100
+
+                    verkoop_reden = None
+
+                    if verandering <= -2:
+                        verkoop_reden = "STOP-LOSS"
+                    elif verandering >= 6:
+                        verkoop_reden = "TAKE-PROFIT"
+                    elif trailing_daling >= 1.5:
+                        verkoop_reden = "TRAILING STOP"
+                    elif rsi > 75:
+                        verkoop_reden = "RSI EXIT"
+
+                    if verkoop_reden:
+                        saldo_usdt = btc_bezit * prijs * (1 - fee)
+                        btc_bezit = 0
+                        positie_open = False
+                        status = "PAPER VERKOOP - " + verkoop_reden
+                    else:
+                        status = "Positie open houden"
+
+            totale_waarde = saldo_usdt + (btc_bezit * prijs)
+            laatste_winst = totale_waarde - start_saldo
+            waardes.append(totale_waarde)
+
+            if len(waardes) > 100:
+                waardes.pop(0)
+
+        except Exception as e:
+            status = "Fout: " + str(e)
+
+        time.sleep(10)
+
+@app.route("/")
+def index():
+    return render_template_string("""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>BTC PRO v2 Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial; background: #111; color: white; padding: 30px; }
+        h1 { color: #00ff99; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+        .box { background: #222; padding: 15px; border-radius: 10px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 12px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>BTC PRO v2 Dashboard</h1>
+
+    <div class="grid">
+        <div class="box">BTC prijs<br><b id="prijs">-</b></div>
+        <div class="box">RSI<br><b id="rsi">-</b></div>
+        <div class="box">Totale waarde<br><b id="waarde">-</b></div>
+        <div class="box">Winst/verlies<br><b id="winst">-</b></div>
+    </div>
+
+    <div class="card">
+        Status: <b id="status">-</b>
+    </div>
+
+    <div class="card">
+        <canvas id="chart"></canvas>
+    </div>
+
+<script>
+let chart;
+
+async function updateData() {
+    const res = await fetch('/data');
+    const data = await res.json();
+
+    document.getElementById('prijs').innerText = data.prijs + " USDT";
+    document.getElementById('rsi').innerText = data.rsi;
+    document.getElementById('waarde').innerText = data.waarde + " USDT";
+    document.getElementById('winst').innerText = data.winst + " USDT";
+    document.getElementById('status').innerText = data.status;
+
+    if (!chart) {
+        chart = new Chart(document.getElementById('chart'), {
+            type: 'line',
+            data: {
+                labels: data.labels,
+                datasets: [{
+                    label: 'Totale waarde USDT',
+                    data: data.waardes,
+                    borderWidth: 2
+                }]
+            }
+        });
+    } else {
+        chart.data.labels = data.labels;
+        chart.data.datasets[0].data = data.waardes;
+        chart.update();
+    }
+}
+
+setInterval(updateData, 3000);
+updateData();
+</script>
+</body>
+</html>
+""")
+
+@app.route("/data")
+def data():
+    totale_waarde = saldo_usdt + (btc_bezit * laatste_prijs)
+
+    return jsonify({
+        "prijs": round(laatste_prijs, 2),
+        "rsi": round(laatste_rsi, 2),
+        "waarde": round(totale_waarde, 2),
+        "winst": round(totale_waarde - start_saldo, 2),
+        "status": status,
+        "waardes": [round(x, 2) for x in waardes],
+        "labels": list(range(len(waardes)))
+    })
+
+Thread(target=bot_loop, daemon=True).start()
+
+app.run(debug=False)
