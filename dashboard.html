@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Internationaal Crypto Nieuws Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: #e5e7eb;
+    }
+
+    header {
+      padding: 24px;
+      background: #020617;
+      border-bottom: 1px solid #1e293b;
+    }
+
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      color: #94a3b8;
+      font-size: 14px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 20px 24px;
+      background: #111827;
+      border-bottom: 1px solid #1e293b;
+    }
+
+    input, select, button {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 14px;
+    }
+
+    button {
+      cursor: pointer;
+      background: #2563eb;
+      border: none;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    .status {
+      padding: 0 24px 16px 24px;
+      color: #94a3b8;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      padding: 24px;
+    }
+
+    .card {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 12px 24px rgba(0,0,0,0.25);
+    }
+
+    .source {
+      display: inline-block;
+      font-size: 12px;
+      color: #93c5fd;
+      background: rgba(37, 99, 235, 0.12);
+      padding: 4px 8px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+    }
+
+    .impact {
+      display: inline-block;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      margin-left: 6px;
+    }
+
+    .high { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
+    .medium { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
+    .low { background: rgba(34, 197, 94, 0.18); color: #86efac; }
+
+    .title {
+      font-size: 18px;
+      font-weight: bold;
+      line-height: 1.35;
+      margin: 6px 0 10px;
+    }
+
+    .meta {
+      color: #94a3b8;
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    .description {
+      color: #cbd5e1;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+
+    a {
+      color: #60a5fa;
+      text-decoration: none;
+      font-weight: bold;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .error {
+      padding: 24px;
+      color: #fecaca;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Internationaal Crypto Nieuws Dashboard</h1>
+    <div class="subtitle">Automatische update elke 5 minuten | Focus op marktimpact, regelgeving, exchanges, ETF’s, hacks en grote coins</div>
+  </header>
+
+  <section class="controls">
+    <input id="searchInput" type="text" placeholder="Zoek op BTC, ETH, ETF, SEC, Binance..." />
+    <select id="impactFilter">
+      <option value="all">Alle impactniveaus</option>
+      <option value="high">Hoge impact</option>
+      <option value="medium">Middel impact</option>
+      <option value="low">Lage impact</option>
+    </select>
+    <button onclick="loadNews()">Nu verversen</button>
+  </section>
+
+  <div class="status" id="status">Nieuws wordt geladen...</div>
+  <main class="grid" id="newsGrid"></main>
+
+  <script>
+    const RSS_FEEDS = [
+      {
+        name: 'CoinDesk',
+        url: 'https://www.coindesk.com/arc/outboundfeeds/rss/'
+      },
+      {
+        name: 'Cointelegraph',
+        url: 'https://cointelegraph.com/rss'
+      },
+      {
+        name: 'Bitcoin Magazine',
+        url: 'https://bitcoinmagazine.com/.rss/full/'
+      },
+      {
+        name: 'Decrypt',
+        url: 'https://decrypt.co/feed'
+      }
+    ];
+
+    const proxy = 'https://api.rss2json.com/v1/api.json?rss_url=';
+    let allNews = [];
+
+    function detectImpact(text) {
+      const highWords = ['sec', 'etf', 'hack', 'lawsuit', 'ban', 'fed', 'rate', 'binance', 'coinbase', 'blackrock', 'crash', 'liquidation', 'approval', 'rejection'];
+      const mediumWords = ['bitcoin', 'ethereum', 'btc', 'eth', 'solana', 'xrp', 'stablecoin', 'regulation', 'mining', 'defi'];
+      const lowerText = text.toLowerCase();
+
+      if (highWords.some(word => lowerText.includes(word))) return 'high';
+      if (mediumWords.some(word => lowerText.includes(word))) return 'medium';
+      return 'low';
+    }
+
+    function cleanText(html) {
+      const div = document.createElement('div');
+      div.innerHTML = html || '';
+      return div.textContent || div.innerText || '';
+    }
+
+    async function loadNews() {
+      const status = document.getElementById('status');
+      const grid = document.getElementById('newsGrid');
+      status.textContent = 'Nieuws wordt opgehaald...';
+      grid.innerHTML = '';
+
+      try {
+        const requests = RSS_FEEDS.map(feed =>
+          fetch(proxy + encodeURIComponent(feed.url))
+            .then(res => res.json())
+            .then(data => (data.items || []).map(item => ({
+              source: feed.name,
+              title: item.title,
+              link: item.link,
+              pubDate: item.pubDate,
+              description: cleanText(item.description).slice(0, 220),
+              impact: detectImpact(`${item.title} ${item.description}`)
+            })))
+            .catch(() => [])
+        );
+
+        const results = await Promise.all(requests);
+        allNews = results.flat()
+          .sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate))
+          .slice(0, 60);
+
+        renderNews();
+        status.textContent = `Laatste update: ${new Date().toLocaleString('nl-NL')} | ${allNews.length} berichten geladen`;
+      } catch (error) {
+        grid.innerHTML = '<div class="error">Kon nieuws niet laden. Controleer internetverbinding of RSS-proxy.</div>';
+        status.textContent = 'Fout bij laden.';
+      }
+    }
+
+    function renderNews() {
+      const query = document.getElementById('searchInput').value.toLowerCase();
+      const impact = document.getElementById('impactFilter').value;
+      const grid = document.getElementById('newsGrid');
+
+      const filtered = allNews.filter(item => {
+        const matchesSearch = !query || `${item.title} ${item.description} ${item.source}`.toLowerCase().includes(query);
+        const matchesImpact = impact === 'all' || item.impact === impact;
+        return matchesSearch && matchesImpact;
+      });
+
+      grid.innerHTML = filtered.map(item => `
+        <article class="card">
+          <span class="source">${item.source}</span>
+          <span class="impact ${item.impact}">${impactLabel(item.impact)}</span>
+          <div class="title">${item.title}</div>
+          <div class="meta">${new Date(item.pubDate).toLocaleString('nl-NL')}</div>
+          <div class="description">${item.description || 'Geen samenvatting beschikbaar.'}</div>
+          <a href="${item.link}" target="_blank" rel="noopener noreferrer">Artikel openen</a>
+        </article>
+      `).join('');
+    }
+
+    function impactLabel(level) {
+      if (level === 'high') return 'Hoge impact';
+      if (level === 'medium') return 'Middel impact';
+      return 'Lage impact';
+    }
+
+    document.getElementById('searchInput').addEventListener('input', renderNews);
+    document.getElementById('impactFilter').addEventListener('change', renderNews);
+
+    loadNews();
+    setInterval(loadNews, 5 * 60 * 1000);
+  </script>
+</body>
+</html>
